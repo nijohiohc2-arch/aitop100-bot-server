@@ -1,5 +1,6 @@
 # aitop100-bot-server
-Minimal Kakao chatbot webhook stub for AI_TOP_100 2026.
-- GET /healthz -> ok
-- POST /kakao/webhook -> SkillResponse 2.0 echo if userRequest.utterance, else {"ok":true}
-- Env: PORT, optional WEBHOOK_SHARED_SECRET (checks Authorization header)
+Kakao bot webhook stub (AI_TOP_100 2026).
+- GET /healthz -> 200 ok
+- POST /kakao/webhook -> 204 immediately; for op=0 & t=MESSAGE_CREATE, async POST to https://kapi.kakao.com/v1/bot/callback (KakaoAK BOT_TOKEN + X-Bot-Callback-Token)
+- Env: PORT, BOT_TOKEN, optional WEBHOOK_HEADER_NAME/WEBHOOK_HEADER_VALUE
+- Note: server egress IP must be in Kakao admin key IP allowlist.
