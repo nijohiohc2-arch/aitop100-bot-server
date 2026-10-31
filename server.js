@@ -1,6 +1,3 @@
-// 교동마을 CS - CommonJS 버전 (package.json type 없어도 동작)
-// Node 18+는 fetch 내장이라 node-fetch 불필요
-
 const express = require("express");
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -11,159 +8,111 @@ const CALLBACK_TOKEN = process.env.CALLBACK_TOKEN || process.env.X_BOT_CALLBACK_
 const WEBHOOK_HEADER_NAME = process.env.WEBHOOK_HEADER_NAME;
 const WEBHOOK_HEADER_VALUE = process.env.WEBHOOK_HEADER_VALUE;
 
-console.log("[BOOT] PORT", PORT, "BOT_TOKEN exists?", !!BOT_TOKEN, "CALLBACK_TOKEN exists?", !!CALLBACK_TOKEN);
-
+// ========== 교동마을 운영 원칙 ==========
+const CRITICAL = "송장등록≠발송완료, 포장완료≠집하완료, 집하완료≠배송완료, 간선재개≠개별집하";
 const TYPHOON = [
   "2026-06-05 09:10 송장 등록 (구방만, 직접확인)",
   "2026-06-05 11:40 결항 통보 (구방만)",
-  "2026-06-06 결항 지속 (박수복 전언, 직접확인 아님)",
+  "2026-06-06 결항 지속 / 포장완료물량 냉장대기 (박수복 전언)",
   "2026-06-07 15:00 간선 재개",
   "2026-06-07 일요일 집하 불가",
-  "2026-06-08 09:00 집하 재개"
+  "2026-06-08 09:00 집하 재개 및 순차 적재"
 ];
 
-function classify(text){
-  const t = text||"";
-  if(/상품|가격|규격|구성|원산지/.test(t)) return "product";
-  if(/쿠폰|할인|이벤트|프로모션|홍보/.test(t)) return "promotion";
-  if(/주문/.test(t)) return "order_check";
-  if(/배송.*조회|송장|운송장/.test(t)) return "delivery_check";
-  if(/지연|결항|태풍|집하/.test(t)) return "delivery_delay";
-  if(/하자|썩|곰팡|터짐|상했/.test(t)) return "defect";
-  if(/환불|반품|재배송/.test(t)) return "refund";
-  if(/사람|상담원|담당자/.test(t)) return "escalation";
-  if(/태풍|6월/.test(t)) return "typhoon";
+function classify(t){
+  t=t||"";
+  if(/상품|가격|규격|구성|원산지|보관|선물세트|카탈로그/.test(t)) return "product";
+  if(/쿠폰|할인|이벤트|프로모션|상세페이지|배너|홍보|팜플렛/.test(t)) return "promotion";
+  if(/주문/.test(t)) return "order";
+  if(/배송.*조회|송장|운송장|어디|도착/.test(t)) return "delivery";
+  if(/지연|결항|태풍|집하.*중단|파손|분실|안와/.test(t)) return "delay";
+  if(/하자|썩|물렀|곰팡|터짐|상했|벌레|이물질/.test(t)) return "defect";
+  if(/환불|반품|보상|재배송|교환/.test(t)) return "refund";
+  if(/사람|상담원|담당자|조합장/.test(t)) return "escalation";
   return "unknown";
 }
 
-function build(intent, text){
+function build(intent, text, isPersonal){
+  const orderMatch = text.match(/[A-Z]{2,}-?\d+|\d{6,}/);
+  const order = orderMatch ? orderMatch[0] : "";
+  const personalTag = isPersonal ? "[개인 1:1 문의] " : "";
+
   if(intent==="product"){
-    return "상품 안내\n• 가격/규격/구성은 생산자 원자료 제공자 기준\n• 홍보라 제작 상세페이지/배너/카탈로그는 원자료 사용, 최종 승인 고길동\n• 쿠폰/이벤트는 원자료 출처와 승인일자 확인 후 안내\n문의 상품명을 알려주세요.";
+    return personalTag+"상품 안내\n• 가격/규격/구성/원산지/보관: 생산자 및 조합 원자료 제공자 기준\n• 홍보라 제작 상세페이지/배너/카탈로그/동봉안내문은 원자료 사용, 최종 승인 고길동\n• 쿠폰/이벤트/협찬: 원자료 출처와 승인일자, 채널/URL, 수정이력 확인 후 안내\n문의 상품명을 알려주세요.";
   }
   if(intent==="promotion"){
-    return "[홍보] 제작자(홍보라)≠결정권자(생산자 원자료)\n필요: 상세페이지 원본, 가격/규격 출처, 프로모션 조건, 쿠폰/기간, 협찬 계약, 승인여부/일자, 채널/URL, 수정이력";
+    return personalTag+"[홍보·마케팅]\n제작자(홍보라)≠결정권자(생산자 원자료)\n필요: 상세페이지 원본, 가격/규격 출처, 프로모션 조건, 쿠폰코드/기간, 협찬/인플루언서 계약, 승인여부/일자, 등록채널/URL, 수정이력\n가격/규격 오안내 방지 위해 출처 기록 필수입니다.";
   }
-  if(intent==="order_check"){
-    return "주문번호를 알려주시면 주문DB에서 실제 조회해 안내드리겠습니다. (기억이 아니라 실제 조회 원칙)";
+  if(intent==="order"){
+    if(!order) return personalTag+"주문번호를 알려주시면 주문DB에서 실제 조회해 안내드리겠습니다. (기억이 아닌 실제 조회 원칙 - 이민준)";
+    return personalTag+"[주문 확인: "+order+"]\n주문DB/포장DB/물류DB가 분산되어 있어 통합 조회 구축 중입니다.\n확인 필요: 채널별 기록 위치, 주문번호 동일 사용 여부, 생산·포장·배송 연결 여부";
   }
-  if(intent==="delivery_check"){
-    return "배송 조회\n• 송장등록≠발송완료, 포장완료≠집하완료, 집하완료≠배송완료\n주문번호 주시면 집하시각 기준으로 구분 안내드릴게요.\n※ 2026년 6월 사례처럼 송장만 등록되고 결항된 경우가 있었습니다.";
+  if(intent==="delivery"){
+    if(!order) return personalTag+"주문번호를 알려주시면 송장등록/포장완료/집하/운송/배송완료를 구분해 안내드리겠습니다.\n※ "+CRITICAL;
+    return personalTag+"[배송 조회: "+order+"]\n현재 상태: 송장등록 여부 확인 중\n• 포장완료≠집하완료, 집하완료≠배송완료\n• 실제 인수/집하 시각이 조회되어야 발송 시작으로 안내 가능\n※ 2026년 6월 사례처럼 송장만 등록되고 결항된 경우가 있었습니다.";
   }
-  if(intent==="typhoon" || text.includes("태풍")){
-    return "[2026년 6월 태풍 지연]\n" + TYPHOON.map(v=>"• "+v).join("\n") + "\n\n핵심: 송장등록(6/5 09:10)과 실제 집하(6/8 09:00)는 다릅니다.";
-  }
-  if(intent==="delivery_delay"){
-    return "배송 지연 안내\n• 결항 시 송장등록 후에도 운송 중단 가능 (구방만 기록)\n• 6/5 09:10 등록→11:40 결항→6/8 09:00 집하재개 사례\n주문번호 주시면 실제 시각 조회해 안내드릴게요.";
+  if(intent==="delay" || /태풍|6월/.test(text)){
+    return personalTag+"[2026년 6월 태풍 애플망고 지연 - 확인된 타임라인]\n"+TYPHOON.map(v=>"• "+v).join("\n")+"\n\n핵심: 송장등록(6/5 09:10)과 실제 집하(6/8 09:00)는 다릅니다.\n포장완료 물량은 냉장대기(전언), 보관장소/책임자/포장시각은 미확인.";
   }
   if(intent==="defect" || intent==="refund"){
     const m = text.match(/(\d+)\s*개.*(\d+)\s*개/);
     let total=10, defect=3, paid=30000;
     if(m){ total=parseInt(m[1]); defect=parseInt(m[2]); }
     const rate = Math.round((defect/total*100)*10)/10;
-    let rule = rate<30?"부분환불":rate<=70?"50% 환불 또는 전량 재배송":"전액환불 또는 전량 재배송";
-    let msg = "[하자 접수] 총 "+total+"개 중 "+defect+"개, 하자율 "+rate+"% ("+rule+")\n";
+    const rule = rate<30?"하자분 비율 부분환불":rate<=70?"50% 환불 또는 전량 재배송":"전액환불 또는 전량 재배송";
     const raw = paid*defect/total;
     const ceiled = Math.ceil(raw/10)*10;
-    const final = ceiled>0 && ceiled<1000?1000:ceiled;
+    const final = ceiled>0 && ceiled<1000 ? 1000 : ceiled;
+    let msg = personalTag+"[하자 접수] 총 "+total+"개 중 "+defect+"개, 하자율 "+rate+"% ("+rule+")\n";
     msg += "계산상 예상액: "+final.toLocaleString()+"원 (실결제액 기준, 10원 절상, 최소 1천원, 배송비 미환급)\n";
-    msg += "\n※ 권한위임표 시행일 2037-06-01로 현재 미확인. 확정 안내 금지, 참고용만. 승인 기록 후 처리.\n※ 사진 없어도 진술로 접수 가능, 위생 위해시 섭취중단 우선.";
-    if(final>50000) msg+="\n→ 5만원 초과로 이민준→고길동 승인 필요. 무응답을 승인으로 간주 안함.";
+    if(/곰팡|벌레|이물질/.test(text)) msg+="⚠️ 위생 위해 명백 - 섭취 중단, 폐기 안내 우선\n";
+    msg+="\n※ 권한위임표 시행일 2037-06-01로 현재 미확인. 확정 안내 금지, 참고용만. 승인 기록 후 처리.\n※ 사진 없어도 진술로 접수 가능, 부분환불 배송비 미환급, 재배송 선택 시 환불 중복 불가.";
+    if(final>50000) msg+="\n→ 5만원 초과로 이민준 운영자 1차 판단→고길동 조합장 최종 승인 필요. 무응답을 승인으로 간주 안함.";
     return msg;
   }
   if(intent==="escalation"){
-    return "[담당자 이관]\n상담창구→이민준 운영자 1차 판단→필요시 고길동 최종 판단\n원칙: 승인은 기록, 무응답≠승인, 상담창구가 조합장에게 직접 요청하는 구조 아님";
+    return personalTag+"[담당자 이관]\n상담창구(CS 에이전트) - 티켓 기록 → 이민준 운영자 1차 판단 → 필요시 고길동 조합장 최종 판단\n원칙: 승인은 기록으로 남아야 함, 무응답/기한경과≠승인, 상담창구에서 조합장에게 직접 승인 요청하는 구조 아님";
   }
-  return "교동마을 CS 에이전트\n확인된 데이터만 안내, 모르면 모른다고 안내\n※ 송장등록을 발송완료로 표현 안함\n\n1. 상품 안내\n2. 주문 확인\n3. 배송 조회 (송장/집하 구분)\n4. 배송 지연 (태풍 사례)\n5. 하자 접수 (예: 10개 중 4개 상함)\n6. 담당자 이관\n\n주문번호 함께 알려주세요.";
+  return "교동마을 CS 에이전트\n확인된 데이터만 안내, 모르면 모른다고 안내\n※ "+CRITICAL+"\n\n1. 상품 안내 (원자료 출처 확인)\n2. 주문 확인\n3. 배송 조회 (송장/집하 구분)\n4. 배송 지연/사고 (2026년 6월 태풍 포함)\n5. 하자 접수 (예: 10개 중 4개 상함)\n6. 환불 및 담당자 이관\n\n주문번호 함께 알려주세요.";
 }
 
 async function sendCallback(chatId, text){
-  if(!BOT_TOKEN){
-    console.error("[CALLBACK] BOT_TOKEN 없음");
-    return;
-  }
-  const url = "https://kapi.kakao.com/v1/bot/callback";
-  const headers = {
-    "Authorization": "KakaoAK " + BOT_TOKEN,
-    "Content-Type": "application/json"
-  };
-  if(CALLBACK_TOKEN) headers["X-Bot-Callback-Token"] = CALLBACK_TOKEN;
-  
-  const body = JSON.stringify({ chatId: chatId, text: text });
-  console.log("[CALLBACK] POST", url, "chatId", chatId, "len", text.length);
+  if(!BOT_TOKEN){ console.error("BOT_TOKEN 없음"); return; }
+  const headers = { "Authorization":"KakaoAK "+BOT_TOKEN, "Content-Type":"application/json" };
+  if(CALLBACK_TOKEN) headers["X-Bot-Callback-Token"]=CALLBACK_TOKEN;
   try{
-    const res = await fetch(url, { method:"POST", headers: headers, body: body });
-    const txt = await res.text();
-    console.log("[CALLBACK] status", res.status, txt.slice(0,500));
-    if(res.status===401) console.error("[CALLBACK] 401 - BOT_TOKEN 또는 CALLBACK_TOKEN 확인 필요, 또는 Render IP가 카카오 IP 허용리스트에 없음");
-    if(res.status===403) console.error("[CALLBACK] 403 - IP 허용리스트 확인. Render는 outbound IP가 유동적이라 고정 IP 애드온 필요할 수 있음");
-  }catch(e){
-    console.error("[CALLBACK] fetch error", e);
-  }
+    const res = await fetch("https://kapi.kakao.com/v1/bot/callback",{ method:"POST", headers:headers, body:JSON.stringify({ chatId:chatId, text:text }) });
+    const t = await res.text();
+    console.log("[CALLBACK] status",res.status,t.slice(0,400));
+    if(res.status===401) console.error("401: BOT_TOKEN/CALLBACK_TOKEN 확인 필요");
+    if(res.status===403) console.error("403: IP 허용리스트 확인 - Render IP가 카카오에 등록 안됨");
+  }catch(e){ console.error("callback error",e); }
 }
 
-app.get("/healthz", (req,res)=>res.status(200).send("ok - gyodong cjs"));
-app.get("/", (req,res)=>{
-  res.json({
-    service:"gyodong",
-    bot_token: !!BOT_TOKEN,
-    callback_token: !!CALLBACK_TOKEN,
-    critical: "송장등록≠발송완료, 포장완료≠집하완료, 집하완료≠배송완료"
-  });
-});
-
-// 디버그용 - 환경변수 확인 (토큰 값은 노출 안함)
-app.get("/debug/env", (req,res)=>{
-  res.json({
-    has_bot_token: !!BOT_TOKEN,
-    has_callback_token: !!CALLBACK_TOKEN,
-    has_webhook_header: !!(WEBHOOK_HEADER_NAME && WEBHOOK_HEADER_VALUE),
-    port: PORT,
-    node_version: process.version
-  });
-});
+app.get("/healthz",(req,res)=>res.status(200).send("ok"));
+app.get("/",(req,res)=>res.json({ service:"gyodong-cs-bot", critical:CRITICAL, has_token:!!BOT_TOKEN, has_callback:!!CALLBACK_TOKEN, typhoon:TYPHOON }));
 
 app.post("/kakao/webhook", async (req,res)=>{
-  // 1. 즉시 204 - 카카오는 3초 이내 응답 기대
   res.status(204).send("");
-
-  // 헤더 검증 (설정했을 때만)
   if(WEBHOOK_HEADER_NAME && WEBHOOK_HEADER_VALUE){
-    const hv = req.headers[WEBHOOK_HEADER_NAME.toLowerCase()];
-    if(hv !== WEBHOOK_HEADER_VALUE){
-      console.warn("[WEBHOOK] header mismatch", WEBHOOK_HEADER_NAME, hv);
-      return;
-    }
+    if(req.headers[WEBHOOK_HEADER_NAME.toLowerCase()]!==WEBHOOK_HEADER_VALUE){ console.warn("header mismatch"); return; }
   }
+  const body=req.body;
+  const d=body.d||body;
+  if(body.op!==0 || body.t!=="MESSAGE_CREATE"){ console.log("ignore",body.op,body.t); return; }
 
-  const body = req.body;
-  console.log("[WEBHOOK] incoming", JSON.stringify(body).slice(0,2000));
+  // 개인 1:1도 잡히게 chatId 다중 추출
+  const chatId = d.chatId || d.chat?.id || d.channelId || d.chat_id || d.user?.id || d.userId || d.sender?.id;
+  const userText = d.message?.text || d.text || d.content || d.message?.content || "";
+  const isPersonal = !!d.user?.id || d.chat?.type==="personal" || d.isPersonalChat;
 
-  const op = body.op;
-  const t = body.t;
-  const d = body.d || body;
+  console.log("[WEBHOOK] chatId",chatId,"personal",isPersonal,"text",userText,"raw",JSON.stringify(d).slice(0,1000));
 
-  if(op!==0 || t!=="MESSAGE_CREATE"){
-    console.log("[WEBHOOK] ignore not MESSAGE_CREATE", op, t);
-    return;
-  }
+  if(!chatId || !userText) return;
 
-  const chatId = d.chatId || d.chat?.id || d.chat_id || d.channelId;
-  const userMessage = d.message?.text || d.text || d.content || d.message?.content || "";
-
-  if(!chatId){
-    console.error("[WEBHOOK] chatId missing", d);
-    return;
-  }
-  if(!userMessage){
-    console.log("[WEBHOOK] empty message, ignore");
-    return;
-  }
-
-  const intent = classify(userMessage);
-  console.log("[INTENT]", intent, "text", userMessage);
-
-  const reply = build(intent, userMessage);
+  const intent = classify(userText);
+  const reply = build(intent, userText, isPersonal);
   await sendCallback(chatId, reply);
 });
 
-app.listen(PORT, ()=>console.log("listening "+PORT));
+app.listen(PORT,()=>console.log("gyodong listening "+PORT+" "+CRITICAL));
