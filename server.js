@@ -686,9 +686,12 @@ function createApp() {
       'Content-Type': 'application/json',
     };
     if (token) headers['X-Bot-Callback-Token'] = token;
-    const body = chatId
-      ? JSON.stringify({ chatId, text: out.text })
-      : JSON.stringify({ skillResponse: out.skill });
+    // Always use skillResponse + callback token (Kakao bot webhook protocol)
+    if (!token) {
+      console.error('[CALLBACK] callbackToken 없음');
+      return;
+    }
+    const body = JSON.stringify({ skillResponse: out.skill || { version: '2.0', template: { outputs: [{ simpleText: { text: out.text || '' } }] } } });
     try {
       const r = await fetch('https://kapi.kakao.com/v1/bot/callback', { method: 'POST', headers, body });
       const txt = await r.text();
